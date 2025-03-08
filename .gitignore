@@ -20,10 +20,10 @@ pids
 lib-cov
 
 # wandb Directory Jupyter checkpoints
-wandb
-.ipynb_checkpoints
-__pycache__
-.vscode
+wandb/
+.ipynb_checkpoints/
+__pycache__/
+.vscode/
 
 # Coverage directory used by tools like istanbul
 coverage
