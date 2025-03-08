@@ -6,22 +6,33 @@ import wandb
 
 class Softmax:
     def compute(self, x):
-        exp_x = np.exp(x - np.max(x)) # To avoid overflow
+        x_stable = x - np.max(x, axis=0, keepdims=True)
+        exp_x = np.exp(x_stable)
         return exp_x / np.sum(exp_x, axis=0, keepdims=True)
 
     def derivative(self, x):
         s = self.compute(x)
-        jacobian = np.diagflat(s) - np.outer(s, s)
-        return jacobian
-    
+        return s * (1 - s)
+
+class Sigmoid:
+    def compute(self, x):
+        # Numerically stable Sigmoid to avoid overflow
+        return np.where(x >= 0,
+                        1 / (1 + np.exp(-x)),
+                        np.exp(x) / (1 + np.exp(x)))
+
+    def derivative(self, x):
+        sig = self.compute(x)
+        return sig * (1 - sig)
+
 class RandomNormalInitializer:
     def __init__(self, mean=0.0, std=1.0):
         self.mean = mean
         self.std = std
 
     def initialize(self, n_in, n_out):
-        weights = np.random.normal(loc=self.mean, scale=self.std, size=(n_in, n_out))
-        biases = np.random.normal(loc=self.mean, scale=self.std, size=(n_out, 1))
+        weights = np.random.normal(self.mean, self.std, (n_in, n_out))
+        biases = np.random.normal(self.mean, self.std, (n_out, 1))
         return weights, biases
 
 class InputLayer:
@@ -31,54 +42,51 @@ class InputLayer:
         self.size = data.shape[0]
         self.output = data
         self.layer_type = "Input"
+        self.val_data = None
+        self.test_data = None
 
     def __repr__(self):
         return f"{self.layer_type} - Size: {self.size}"
-    
+
 class DenseLayer:
     def __init__(self, units, activation, name, final=False):
         self.name = name
         self.units = units
-        self.activation = activation  # expects an activation object with compute and derivative methods
+        self.activation = activation
         self.activation_name = type(activation).__name__
         self.layer_type = "DenseLayer"
-        # Attributes to be set during network initialization
         self.weights = None
         self.biases = None
         self.input_dim = None
         self.linear_output = None
         self.output = None
+        self.val_linear = None
+        self.val_output = None
+        self.test_linear = None
+        self.test_output = None
 
     def __repr__(self):
         return f"{self.layer_type} - Units: {self.units}, Activation: {self.activation_name}"
 
 class CrossEntropyLoss:
     def compute_loss(self, targets, predictions):
-        # Add a tiny constant to avoid log(0)
-        loss = -np.sum(targets * np.log(predictions + 1e-8))
-        return loss
+        return -np.sum(targets * np.log(predictions + 1e-8))
 
     def gradient(self, targets, predictions):
         return -targets / (predictions + 1e-8)
-    
+
 class OneHotEncoder:
     def fit(self, labels, num_classes):
-        self.labels = labels
         self.num_classes = num_classes
 
-    def transform(self):
-        onehot = np.zeros((self.num_classes, self.labels.size))
-        for idx, label in enumerate(self.labels):
+    def transform(self, labels):
+        onehot = np.zeros((self.num_classes, labels.size))
+        for idx, label in enumerate(labels):
             onehot[label, idx] = 1
         return onehot
-
-    def fit_transform(self, labels, num_classes):
-        self.fit(labels, num_classes)
-        return self.transform()
-
     def inverse_transform(self, onehot):
         return np.argmax(onehot, axis=0)
-    
+
 class BasicOptimizer:
     def __init__(self, eta=0.01):
         self.lr = eta
@@ -89,12 +97,11 @@ class BasicOptimizer:
             setattr(self, key, value)
 
     def compute_update(self, grad):
-        self.update_val = self.eta * grad
+        grad = np.clip(grad, -1, 1)
+        self.update_val = self.lr * grad
         return self.update_val
-    
-optimizer_mapping = {
-    "Basic": BasicOptimizer()
-}
+
+optimizer_mapping = {"Basic": BasicOptimizer()}
 
 class NeuralNet:
     def __init__(self, layers, batch_size, optimizer_name, init_method, epochs, targets, loss_type,
@@ -121,39 +128,35 @@ class NeuralNet:
             layer.input_dim = prev_units
             weight_shape = (prev_units, layer.units)
             prev_units = layer.units
-            # Attach fresh copies of the chosen optimizer for weights and biases
             layer.weight_optimizer = deepcopy(optimizer_mapping[self.optimizer_name])
             layer.bias_optimizer = deepcopy(optimizer_mapping[self.optimizer_name])
             if optimizer_params:
                 layer.weight_optimizer.set_parameters(optimizer_params)
                 layer.bias_optimizer.set_parameters(optimizer_params)
-            # Initialize weights and biases based on the chosen initialization method
-            if self.init_method == "XavierUniform":
-                init = tf.keras.initializers.RandomNormal(mean=0.0, stddev=0.05)
-                layer.weights = np.array(init(shape=weight_shape))
-                layer.biases = np.zeros((layer.units, 1))
-            else:
-                layer.weights = np.random.normal(0, 1.0, size=weight_shape)
-                layer.biases = np.zeros((layer.units, 1))
+            layer.weights, layer.biases = RandomNormalInitializer().initialize(weight_shape[0], weight_shape[1])
 
     def forward_pass(self):
         for idx in range(1, len(self.layers)):
             prev_output = self.layers[idx-1].output
-            # Compute linear transformation: (W^T * input - bias)
             self.layers[idx].linear_output = np.dot(prev_output.T, self.layers[idx].weights).T - self.layers[idx].biases
-            # Apply the activation function
             self.layers[idx].output = self.layers[idx].activation.compute(self.layers[idx].linear_output)
-        # If using cross-entropy, apply softmax to the final layer outputs
+        if hasattr(self.layers[0], 'val_data') and self.layers[0].val_data is not None:
+            for idx in range(1, len(self.layers)):
+                prev_val = self.layers[0].val_data if idx == 1 else self.layers[idx-1].val_output
+                self.layers[idx].val_linear = np.dot(prev_val.T, self.layers[idx].weights).T - self.layers[idx].biases
+                self.layers[idx].val_output = self.layers[idx].activation.compute(self.layers[idx].val_linear)
         if self.loss_type == "CrossEntropy":
             softmax = Softmax()
             self.layers[-1].output = softmax.compute(self.layers[-1].output)
-            if hasattr(self.layers[-1], 'val_output'):
+            if self.layers[-1].val_output is not None:
                 self.layers[-1].val_output = softmax.compute(self.layers[-1].val_output)
 
     def evaluate(self, X_test, targets_test):
-        self.layers[0].test_data = X_test
+        self.layers[0].test_data = X_test  # Set test_data for InputLayer
         for idx in range(1, len(self.layers)):
-            self.layers[idx].test_linear = np.dot(self.layers[idx-1].test_data.T, self.layers[idx].weights).T - self.layers[idx].biases
+            # Use test_data if previous layer is InputLayer, else use test_output
+            prev_test = self.layers[idx-1].test_data if idx == 1 else self.layers[idx-1].test_output
+            self.layers[idx].test_linear = np.dot(prev_test.T, self.layers[idx].weights).T - self.layers[idx].biases
             self.layers[idx].test_output = self.layers[idx].activation.compute(self.layers[idx].test_linear)
         if self.loss_type == "CrossEntropy":
             softmax = Softmax()
@@ -183,58 +186,48 @@ class NeuralNet:
             val_acc_history.append(val_acc)
 
             if self.use_wandb and wandb:
-                wandb.log({
-                    "epoch": epoch,
-                    "train_loss": current_loss / self.targets.shape[1],
-                    "train_accuracy": train_acc / self.targets.shape[1],
-                    "val_loss": val_loss / self.targets_val.shape[1],
-                    "val_accuracy": val_acc / self.targets_val.shape[1]
-                })
+                wandb.log({"epoch": epoch, "train_loss": current_loss / self.targets.shape[1],
+                           "train_accuracy": train_acc / self.targets.shape[1],
+                           "val_loss": val_loss / self.targets_val.shape[1],
+                           "val_accuracy": val_acc / self.targets_val.shape[1]})
 
-            # Process mini-batches
-            for batch in range(self.num_batches):
-                start = batch * self.batch_size
-                end = (batch + 1) * self.batch_size
-                batch_targets = self.targets[:, start:end]
-                batch_predictions = self.layers[-1].output[:, start:end]
+        for batch in range(self.num_batches):
+            start = batch * self.batch_size
+            end = (batch + 1) * self.batch_size
+            batch_targets = self.targets[:, start:end]
+            batch_predictions = self.layers[-1].output[:, start:end]
 
-                # Compute gradient at the output layer
-                grad_out = self.loss.gradient(batch_targets, batch_predictions)
-                grad_linear = grad_out * self.layers[-1].activation.derivative(self.layers[-1].linear_output[:, start:end])
-                
-                # Compute gradients for weights and biases (for the last layer)
-                prev_activation = self.layers[-2].output[:, start:end]
-                grad_w = np.dot(grad_linear, prev_activation.T)
+            # Output layer gradients (simplified)
+            grad_out = self.loss.gradient(batch_targets, batch_predictions)
+            grad_linear = grad_out  # No Jacobian needed
+
+            # Compute gradients for weights and biases
+            prev_activation = self.layers[-2].output[:, start:end]
+            grad_w = np.dot(prev_activation, grad_linear.T)
+            grad_b = -np.sum(grad_linear, axis=1, keepdims=True)
+
+            # Update final layer
+            self.layers[-1].weights -= self.layers[-1].weight_optimizer.compute_update(grad_w)
+            self.layers[-1].biases -= self.layers[-1].bias_optimizer.compute_update(grad_b)
+
+            # Backpropagate through hidden layers
+            for idx in range(len(self.layers)-2, 0, -1):
+                grad_from_next = np.dot(self.layers[idx+1].weights, grad_linear)
+                activation_deriv = self.layers[idx].activation.derivative(self.layers[idx].linear_output[:, start:end])
+                grad_linear = grad_from_next * activation_deriv
+
+                prev_activation = self.layers[idx-1].output[:, start:end]
+                grad_w = np.dot(prev_activation, grad_linear.T)
                 grad_b = -np.sum(grad_linear, axis=1, keepdims=True)
 
-                # Update parameters for the final layer
-                update_w = self.layers[-1].weight_optimizer.compute_update(grad_w)
-                update_b = self.layers[-1].bias_optimizer.compute_update(grad_b)
-                self.layers[-1].weights -= update_w
-                self.layers[-1].biases -= update_b
+                self.layers[idx].weights -= self.layers[idx].weight_optimizer.compute_update(grad_w)
+                self.layers[idx].biases -= self.layers[idx].bias_optimizer.compute_update(grad_b)
 
-                # Backpropagate through hidden layers
-                for idx in range(len(self.layers)-2, 0, -1):
-                    grad_from_next = np.dot(self.layers[idx+1].weights.T, grad_linear)
-                    grad_linear = grad_from_next * self.layers[idx].activation.derivative(self.layers[idx].linear_output[:, start:end])
-                    prev_activation = self.layers[idx-1].output[:, start:end]
-                    grad_w = np.dot(grad_linear, prev_activation.T)
-                    grad_b = -np.sum(grad_linear, axis=1, keepdims=True)
-                    update_w = self.layers[idx].weight_optimizer.compute_update(grad_w)
-                    update_b = self.layers[idx].bias_optimizer.compute_update(grad_b)
-                    self.layers[idx].weights -= update_w
-                    self.layers[idx].biases -= update_b
+            self.forward_pass()
 
-                # Refresh the forward pass after updating parameters
-                self.forward_pass()
-
-        return {
-            "train_loss": loss_history,
-            "val_loss": val_loss_history,
-            "train_accuracy": train_acc_history,
-            "val_accuracy": val_acc_history,
-            "learning_rate": lr_history
-        }
+        return {"train_loss": loss_history, "val_loss": val_loss_history,
+            "train_accuracy": train_acc_history, "val_accuracy": val_acc_history,
+            "learning_rate": lr_history}
 
     def _compute_accuracy(self, validation=False):
         encoder = OneHotEncoder()
@@ -247,4 +240,3 @@ class NeuralNet:
             val_acc = np.sum(val_pred == val_actual)
             return train_acc, val_acc
         return train_acc
-    

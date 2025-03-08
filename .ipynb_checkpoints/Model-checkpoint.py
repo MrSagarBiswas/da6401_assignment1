@@ -2,17 +2,19 @@ import numpy as np
 import math
 from copy import deepcopy
 from tqdm import tqdm
+import wandb
 
 class Softmax:
     def compute(self, x):
-        exp_x = np.exp(x)
+        x_stable = x - np.max(x, axis=0, keepdims=True) #To avoid overflow
+        exp_x = np.exp(x_stable)
         return exp_x / np.sum(exp_x, axis=0, keepdims=True)
 
     def derivative(self, x):
         s = self.compute(x)
         jacobian = np.diagflat(s) - np.outer(s, s)
         return jacobian
-    
+
 class RandomNormalInitializer:
     def __init__(self, mean=0.0, std=1.0):
         self.mean = mean
@@ -30,23 +32,31 @@ class InputLayer:
         self.size = data.shape[0]
         self.output = data
         self.layer_type = "Input"
+        # Optional attributes for validation and test data:
+        self.val_data = None
+        self.test_data = None
 
     def __repr__(self):
         return f"{self.layer_type} - Size: {self.size}"
-    
+
 class DenseLayer:
     def __init__(self, units, activation, name, final=False):
         self.name = name
         self.units = units
-        self.activation = activation  # expects an activation object with compute and derivative methods
+        self.activation = activation
         self.activation_name = type(activation).__name__
         self.layer_type = "DenseLayer"
-        # Attributes to be set during network initialization
+        # These attributes will be set during network initialization:
         self.weights = None
         self.biases = None
         self.input_dim = None
         self.linear_output = None
         self.output = None
+        # For validation and testing forward passes:
+        self.val_linear = None
+        self.val_output = None
+        self.test_linear = None
+        self.test_output = None
 
     def __repr__(self):
         return f"{self.layer_type} - Units: {self.units}, Activation: {self.activation_name}"
@@ -59,7 +69,7 @@ class CrossEntropyLoss:
 
     def gradient(self, targets, predictions):
         return -targets / (predictions + 1e-8)
-    
+
 class OneHotEncoder:
     def fit(self, labels, num_classes):
         self.labels = labels
@@ -77,7 +87,7 @@ class OneHotEncoder:
 
     def inverse_transform(self, onehot):
         return np.argmax(onehot, axis=0)
-    
+
 class BasicOptimizer:
     def __init__(self, eta=0.01):
         self.lr = eta
@@ -88,9 +98,9 @@ class BasicOptimizer:
             setattr(self, key, value)
 
     def compute_update(self, grad):
-        self.update_val = self.eta * grad
+        self.update_val = self.lr * grad
         return self.update_val
-    
+
 optimizer_mapping = {
     "Basic": BasicOptimizer()
 }
@@ -126,31 +136,35 @@ class NeuralNet:
             if optimizer_params:
                 layer.weight_optimizer.set_parameters(optimizer_params)
                 layer.bias_optimizer.set_parameters(optimizer_params)
-            # Initialize weights and biases based on the chosen initialization method
+            # Initialize weights and biases
             if self.init_method == "XavierUniform":
                 init = tf.keras.initializers.RandomNormal(mean=0.0, stddev=0.05)
                 layer.weights = np.array(init(shape=weight_shape))
                 layer.biases = np.zeros((layer.units, 1))
             else:
-                layer.weights = np.random.normal(0, 1.0, size=weight_shape)
-                layer.biases = np.zeros((layer.units, 1))
+                layer.weights, layer.biases = RandomNormalInitializer().initialize(prev_units, layer.units)
 
     def forward_pass(self):
+        # Forward pass for training data
         for idx in range(1, len(self.layers)):
             prev_output = self.layers[idx-1].output
             # Compute linear transformation: (W^T * input - bias)
             self.layers[idx].linear_output = np.dot(prev_output.T, self.layers[idx].weights).T - self.layers[idx].biases
-            # Apply the activation function
             self.layers[idx].output = self.layers[idx].activation.compute(self.layers[idx].linear_output)
-            # For validation data if available
-            if hasattr(self.layers[0], 'val_data'):
-                self.layers[idx].val_linear = np.dot(self.layers[idx-1].val_data.T, self.layers[idx].weights).T - self.layers[idx].biases
+        # Compute forward pass for validation data if available
+        if hasattr(self.layers[0], 'val_data') and self.layers[0].val_data is not None:
+            for idx in range(1, len(self.layers)):
+                if idx == 1:
+                    prev_val = self.layers[0].val_data
+                else:
+                    prev_val = self.layers[idx-1].val_output
+                self.layers[idx].val_linear = np.dot(prev_val.T, self.layers[idx].weights).T - self.layers[idx].biases
                 self.layers[idx].val_output = self.layers[idx].activation.compute(self.layers[idx].val_linear)
-        # If using cross-entropy, apply softmax to the final layer outputs
+        # If using cross-entropy, apply softmax to final outputs
         if self.loss_type == "CrossEntropy":
-            softmax = SoftmaxActivation()
+            softmax = Softmax()
             self.layers[-1].output = softmax.compute(self.layers[-1].output)
-            if hasattr(self.layers[-1], 'val_output'):
+            if hasattr(self.layers[-1], 'val_output') and self.layers[-1].val_output is not None:
                 self.layers[-1].val_output = softmax.compute(self.layers[-1].val_output)
 
     def evaluate(self, X_test, targets_test):
@@ -159,7 +173,7 @@ class NeuralNet:
             self.layers[idx].test_linear = np.dot(self.layers[idx-1].test_data.T, self.layers[idx].weights).T - self.layers[idx].biases
             self.layers[idx].test_output = self.layers[idx].activation.compute(self.layers[idx].test_linear)
         if self.loss_type == "CrossEntropy":
-            softmax = SoftmaxActivation()
+            softmax = Softmax()
             self.layers[-1].test_output = softmax.compute(self.layers[-1].test_output)
         test_loss = self.loss.compute_loss(targets_test, self.layers[-1].test_output)
         encoder = OneHotEncoder()
@@ -205,12 +219,12 @@ class NeuralNet:
                 grad_out = self.loss.gradient(batch_targets, batch_predictions)
                 grad_linear = grad_out * self.layers[-1].activation.derivative(self.layers[-1].linear_output[:, start:end])
                 
-                # Compute gradients for weights and biases (for the last layer)
+                # Compute gradients for weights and biases (for the final layer)
                 prev_activation = self.layers[-2].output[:, start:end]
                 grad_w = np.dot(grad_linear, prev_activation.T)
                 grad_b = -np.sum(grad_linear, axis=1, keepdims=True)
 
-                # Update parameters for the final layer
+                # Update final layer parameters
                 update_w = self.layers[-1].weight_optimizer.compute_update(grad_w)
                 update_b = self.layers[-1].bias_optimizer.compute_update(grad_b)
                 self.layers[-1].weights -= update_w
@@ -250,4 +264,3 @@ class NeuralNet:
             val_acc = np.sum(val_pred == val_actual)
             return train_acc, val_acc
         return train_acc
-    
