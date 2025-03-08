@@ -2,11 +2,10 @@ import numpy as np
 import math
 from copy import deepcopy
 from tqdm import tqdm
-import wandb
 
 class Softmax:
     def compute(self, x):
-        exp_x = np.exp(x - np.max(x)) # To avoid overflow
+        exp_x = np.exp(x)
         return exp_x / np.sum(exp_x, axis=0, keepdims=True)
 
     def derivative(self, x):
@@ -143,9 +142,13 @@ class NeuralNet:
             self.layers[idx].linear_output = np.dot(prev_output.T, self.layers[idx].weights).T - self.layers[idx].biases
             # Apply the activation function
             self.layers[idx].output = self.layers[idx].activation.compute(self.layers[idx].linear_output)
+            # For validation data if available
+            if hasattr(self.layers[0], 'val_data'):
+                self.layers[idx].val_linear = np.dot(self.layers[idx-1].val_data.T, self.layers[idx].weights).T - self.layers[idx].biases
+                self.layers[idx].val_output = self.layers[idx].activation.compute(self.layers[idx].val_linear)
         # If using cross-entropy, apply softmax to the final layer outputs
         if self.loss_type == "CrossEntropy":
-            softmax = Softmax()
+            softmax = SoftmaxActivation()
             self.layers[-1].output = softmax.compute(self.layers[-1].output)
             if hasattr(self.layers[-1], 'val_output'):
                 self.layers[-1].val_output = softmax.compute(self.layers[-1].val_output)
@@ -156,7 +159,7 @@ class NeuralNet:
             self.layers[idx].test_linear = np.dot(self.layers[idx-1].test_data.T, self.layers[idx].weights).T - self.layers[idx].biases
             self.layers[idx].test_output = self.layers[idx].activation.compute(self.layers[idx].test_linear)
         if self.loss_type == "CrossEntropy":
-            softmax = Softmax()
+            softmax = SoftmaxActivation()
             self.layers[-1].test_output = softmax.compute(self.layers[-1].test_output)
         test_loss = self.loss.compute_loss(targets_test, self.layers[-1].test_output)
         encoder = OneHotEncoder()
