@@ -77,6 +77,7 @@ class CrossEntropyLoss:
 
 class OneHotEncoder:
     def fit(self, labels, num_classes):
+        self.labels = labels
         self.num_classes = num_classes
 
     def transform(self, labels):
@@ -84,6 +85,11 @@ class OneHotEncoder:
         for idx, label in enumerate(labels):
             onehot[label, idx] = 1
         return onehot
+    
+    def fit_transform(self, labels, num_classes):
+        self.fit(labels, num_classes)
+        return self.transform(labels)
+    
     def inverse_transform(self, onehot):
         return np.argmax(onehot, axis=0)
 
@@ -199,7 +205,7 @@ class NeuralNet:
 
             # Output layer gradients (simplified)
             grad_out = self.loss.gradient(batch_targets, batch_predictions)
-            grad_linear = grad_out  # No Jacobian needed
+            grad_linear = grad_out
 
             # Compute gradients for weights and biases
             prev_activation = self.layers[-2].output[:, start:end]
