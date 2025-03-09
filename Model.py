@@ -134,15 +134,133 @@ class BasicOptimizer:
         self.update_val = 0
 
     def set_parameters(self, params):
-        for key, value in params.items():
-            setattr(self, key, value)
+        if "learning_rate" in params:
+            self.lr = params["learning_rate"]
+        # weight_decay is applied externally
 
     def compute_update(self, grad):
         grad = np.clip(grad, -1, 1)
         self.update_val = self.lr * grad
         return self.update_val
+    
+class MomentumOptimizer:
+    def __init__(self, eta=1e-3, momentum=0.9):
+        self.lr = eta
+        self.momentum = momentum
+        self.update_val = 0
 
-optimizer_mapping = {"Basic": BasicOptimizer()}
+    def set_parameters(self, params):
+        if "learning_rate" in params:
+            self.lr = params["learning_rate"]
+        if "momentum" in params:
+            self.momentum = params["momentum"]
+
+    def compute_update(self, grad):
+        self.update_val = self.momentum * self.update_val + self.lr * grad
+        return self.update_val
+
+class NesterovOptimizer:
+    def __init__(self, eta=1e-3, momentum=0.9):
+        self.lr = eta
+        self.momentum = momentum
+        self.update_val = 0
+
+    def set_parameters(self, params):
+        if "learning_rate" in params:
+            self.lr = params["learning_rate"]
+        if "momentum" in params:
+            self.momentum = params["momentum"]
+
+    # Modified to have a single-argument interface like the other optimizers.
+    def compute_update(self, grad):
+        self.update_val = self.momentum * self.update_val + self.lr * grad
+        return self.update_val
+
+class RMSPropOptimizer:
+    def __init__(self, beta=0.9, eta=1e-3, epsilon=1e-7):
+        self.beta = beta
+        self.lr = eta
+        self.epsilon = epsilon
+        self.cache = 0
+
+    def set_parameters(self, params):
+        if "learning_rate" in params:
+            self.lr = params["learning_rate"]
+        if "beta" in params:
+            self.beta = params["beta"]
+        if "epsilon" in params:
+            self.epsilon = params["epsilon"]
+
+    def compute_update(self, grad):
+        self.cache = self.beta * self.cache + (1 - self.beta) * (grad**2)
+        return (self.lr / np.sqrt(self.cache + self.epsilon)) * grad
+
+class AdamOptimizer:
+    def __init__(self, beta1=0.9, beta2=0.999, lr=1e-2, epsilon=1e-8):
+        self.beta1 = beta1
+        self.beta2 = beta2
+        self.lr = lr
+        self.epsilon = epsilon
+        self.m = 0
+        self.v = 0
+        self.iteration = 1
+
+    def set_parameters(self, params):
+        if "learning_rate" in params:
+            self.lr = params["learning_rate"]
+        if "beta1" in params:
+            self.beta1 = params["beta1"]
+        if "beta2" in params:
+            self.beta2 = params["beta2"]
+        if "epsilon" in params:
+            self.epsilon = params["epsilon"]
+
+    def compute_update(self, grad):
+        self.m = self.beta1 * self.m + (1 - self.beta1) * grad
+        self.v = self.beta2 * self.v + (1 - self.beta2) * (grad**2)
+        m_hat = self.m / (1 - self.beta1**self.iteration)
+        v_hat = self.v / (1 - self.beta2**self.iteration)
+        self.iteration += 1
+        return (self.lr / np.sqrt(v_hat + self.epsilon)) * m_hat
+
+class NadamOptimizer:
+    def __init__(self, beta1=0.9, beta2=0.999, lr=1e-3, epsilon=1e-7):
+        self.beta1 = beta1
+        self.beta2 = beta2
+        self.lr = lr
+        self.epsilon = epsilon
+        self.m = 0
+        self.v = 0
+        self.iteration = 1
+
+    def set_parameters(self, params):
+        if "learning_rate" in params:
+            self.lr = params["learning_rate"]
+        if "beta1" in params:
+            self.beta1 = params["beta1"]
+        if "beta2" in params:
+            self.beta2 = params["beta2"]
+        if "epsilon" in params:
+            self.epsilon = params["epsilon"]
+
+    def compute_update(self, grad):
+        self.m = self.beta1 * self.m + (1 - self.beta1) * grad
+        self.v = self.beta2 * self.v + (1 - self.beta2) * (grad**2)
+        m_hat = self.m / (1 - self.beta1**self.iteration)
+        v_hat = self.v / (1 - self.beta2**self.iteration)
+        update_term = self.beta1 * m_hat + (1 - self.beta1 / (1 - self.beta1**self.iteration)) * grad
+        self.iteration += 1
+        return (self.lr / np.sqrt(v_hat + self.epsilon)) * update_term
+
+# A dictionary mapping optimizer names to their instances (for ease of use)
+optimizer_mapping = {
+    "SGD": BasicOptimizer(),
+    "Momentum": MomentumOptimizer(),
+    "Nesterov": NesterovOptimizer(),
+    "RMSProp": RMSPropOptimizer(),
+    "Adam": AdamOptimizer(),
+    "Nadam": NadamOptimizer()
+}
 
 class NeuralNet:
     def __init__(self, layers, batch_size, optimizer_name, init_method, epochs, targets, loss_type,
@@ -161,6 +279,8 @@ class NeuralNet:
             self.X_val = X_val
             self.layers[0].val_data = X_val
             self.targets_val = targets_val
+        # Store optimizer parameters for later use
+        self.optimizer_params = optimizer_params if optimizer_params is not None else {}
         self._initialize_parameters(optimizer_params)
 
     def _initialize_parameters(self, optimizer_params):
@@ -174,7 +294,7 @@ class NeuralNet:
             if optimizer_params:
                 layer.weight_optimizer.set_parameters(optimizer_params)
                 layer.bias_optimizer.set_parameters(optimizer_params)
-            if self.init_method == "RandomNormal":
+            if self.init_method == "Random":
                 layer.weights, layer.biases = RandomNormalInitializer().initialize(weight_shape[0], weight_shape[1])
             else:
                 layer.weights, layer.biases = XavierUniformInitializer().initialize(weight_shape[0], weight_shape[1])
@@ -198,7 +318,6 @@ class NeuralNet:
     def evaluate(self, X_test, targets_test):
         self.layers[0].test_data = X_test  # Set test_data for InputLayer
         for idx in range(1, len(self.layers)):
-            # Use test_data if previous layer is InputLayer, else use test_output
             prev_test = self.layers[idx-1].test_data if idx == 1 else self.layers[idx-1].test_output
             self.layers[idx].test_linear = np.dot(prev_test.T, self.layers[idx].weights).T - self.layers[idx].biases
             self.layers[idx].test_output = self.layers[idx].activation.compute(self.layers[idx].test_linear)
@@ -237,7 +356,11 @@ class NeuralNet:
                 grad_w = np.dot(prev_activation, grad_linear.T)
                 grad_b = -np.sum(grad_linear, axis=1, keepdims=True)
 
-                self.layers[-1].weights -= self.layers[-1].weight_optimizer.compute_update(grad_w)
+                # Retrieve weight decay from optimizer parameters
+                weight_decay = self.optimizer_params.get("weight_decay", 0)
+                update = self.layers[-1].weight_optimizer.compute_update(grad_w)
+                self.layers[-1].weights -= update + weight_decay * self.layers[-1].weights
+
                 self.layers[-1].biases -= self.layers[-1].bias_optimizer.compute_update(grad_b)
 
                 # Backpropagate through hidden layers
@@ -281,8 +404,6 @@ class NeuralNet:
             "val_accuracy": val_acc_history,
             "learning_rate": lr_history
         }
-
-
 
     def _compute_accuracy(self, validation=False):
         encoder = OneHotEncoder()
