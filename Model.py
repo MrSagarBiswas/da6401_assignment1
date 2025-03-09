@@ -57,6 +57,18 @@ class XavierUniformInitializer:
         weights = np.random.uniform(low=-limit, high=limit, size=(n_in, n_out))
         biases = np.zeros((n_out, 1))
         return weights, biases
+    
+class MinMaxScaler:
+    def fit(self, X):
+        self.min_val = np.min(X, axis=0)
+        self.max_val = np.max(X, axis=0)
+
+    def transform(self, X):
+        return (X - self.min_val) / (self.max_val - self.min_val  + 1e-8)
+
+    def fit_transform(self, X):
+        self.fit(X)
+        return self.transform(X)
 
 class InputLayer:
     def __init__(self, data):
@@ -208,6 +220,42 @@ class NeuralNet:
         lr_history = []
 
         for epoch in tqdm(range(self.epochs)):
+            # Run forward pass to compute outputs
+            self.forward_pass()
+
+            for batch in range(self.num_batches):
+                start = batch * self.batch_size
+                end = (batch + 1) * self.batch_size
+                batch_targets = self.targets[:, start:end]
+                batch_predictions = self.layers[-1].output[:, start:end]
+
+                # Compute gradients for the output layer
+                grad_out = self.loss.gradient(batch_targets, batch_predictions)
+                grad_linear = grad_out
+
+                prev_activation = self.layers[-2].output[:, start:end]
+                grad_w = np.dot(prev_activation, grad_linear.T)
+                grad_b = -np.sum(grad_linear, axis=1, keepdims=True)
+
+                self.layers[-1].weights -= self.layers[-1].weight_optimizer.compute_update(grad_w)
+                self.layers[-1].biases -= self.layers[-1].bias_optimizer.compute_update(grad_b)
+
+                # Backpropagate through hidden layers
+                for idx in range(len(self.layers) - 2, 0, -1):
+                    grad_from_next = np.dot(self.layers[idx+1].weights, grad_linear)
+                    activation_deriv = self.layers[idx].activation.derivative(self.layers[idx].linear_output[:, start:end])
+                    grad_linear = grad_from_next * activation_deriv
+
+                    prev_activation = self.layers[idx-1].output[:, start:end]
+                    grad_w = np.dot(prev_activation, grad_linear.T)
+                    grad_b = -np.sum(grad_linear, axis=1, keepdims=True)
+
+                    self.layers[idx].weights -= self.layers[idx].weight_optimizer.compute_update(grad_w)
+                    self.layers[idx].biases -= self.layers[idx].bias_optimizer.compute_update(grad_b)
+
+                # Update outputs after batch update
+                self.forward_pass()
+
             lr_history.append(self.layers[-1].weight_optimizer.lr)
             current_loss = self.loss.compute_loss(self.targets, self.layers[-1].output)
             loss_history.append(current_loss)
@@ -218,48 +266,23 @@ class NeuralNet:
             val_acc_history.append(val_acc)
 
             if self.use_wandb and wandb:
-                wandb.log({"epoch": epoch, "train_loss": current_loss / self.targets.shape[1],
-                           "train_accuracy": train_acc / self.targets.shape[1],
-                           "val_loss": val_loss / self.targets_val.shape[1],
-                           "val_accuracy": val_acc / self.targets_val.shape[1]})
+                wandb.log({
+                    "epoch": epoch,
+                    "train_loss": current_loss / self.targets.shape[1],
+                    "train_accuracy": train_acc / self.targets.shape[1],
+                    "val_loss": val_loss / self.targets_val.shape[1],
+                    "val_accuracy": val_acc / self.targets_val.shape[1]
+                })
 
-        for batch in range(self.num_batches):
-            start = batch * self.batch_size
-            end = (batch + 1) * self.batch_size
-            batch_targets = self.targets[:, start:end]
-            batch_predictions = self.layers[-1].output[:, start:end]
+        return {
+            "train_loss": loss_history,
+            "val_loss": val_loss_history,
+            "train_accuracy": train_acc_history,
+            "val_accuracy": val_acc_history,
+            "learning_rate": lr_history
+        }
 
-            # Output layer gradients (simplified)
-            grad_out = self.loss.gradient(batch_targets, batch_predictions)
-            grad_linear = grad_out
 
-            # Compute gradients for weights and biases
-            prev_activation = self.layers[-2].output[:, start:end]
-            grad_w = np.dot(prev_activation, grad_linear.T)
-            grad_b = -np.sum(grad_linear, axis=1, keepdims=True)
-
-            # Update final layer
-            self.layers[-1].weights -= self.layers[-1].weight_optimizer.compute_update(grad_w)
-            self.layers[-1].biases -= self.layers[-1].bias_optimizer.compute_update(grad_b)
-
-            # Backpropagate through hidden layers
-            for idx in range(len(self.layers)-2, 0, -1):
-                grad_from_next = np.dot(self.layers[idx+1].weights, grad_linear)
-                activation_deriv = self.layers[idx].activation.derivative(self.layers[idx].linear_output[:, start:end])
-                grad_linear = grad_from_next * activation_deriv
-
-                prev_activation = self.layers[idx-1].output[:, start:end]
-                grad_w = np.dot(prev_activation, grad_linear.T)
-                grad_b = -np.sum(grad_linear, axis=1, keepdims=True)
-
-                self.layers[idx].weights -= self.layers[idx].weight_optimizer.compute_update(grad_w)
-                self.layers[idx].biases -= self.layers[idx].bias_optimizer.compute_update(grad_b)
-
-            self.forward_pass()
-
-        return {"train_loss": loss_history, "val_loss": val_loss_history,
-            "train_accuracy": train_acc_history, "val_accuracy": val_acc_history,
-            "learning_rate": lr_history}
 
     def _compute_accuracy(self, validation=False):
         encoder = OneHotEncoder()
