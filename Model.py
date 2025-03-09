@@ -50,6 +50,13 @@ class RandomNormalInitializer:
         weights = np.random.normal(self.mean, self.std, (n_in, n_out))
         biases = np.random.normal(self.mean, self.std, (n_out, 1))
         return weights, biases
+    
+class XavierUniformInitializer:
+    def initialize(self, n_in, n_out):
+        limit = np.sqrt(6.0 / (n_in + n_out))
+        weights = np.random.uniform(low=-limit, high=limit, size=(n_in, n_out))
+        biases = np.zeros((n_out, 1))
+        return weights, biases
 
 class InputLayer:
     def __init__(self, data):
@@ -155,7 +162,10 @@ class NeuralNet:
             if optimizer_params:
                 layer.weight_optimizer.set_parameters(optimizer_params)
                 layer.bias_optimizer.set_parameters(optimizer_params)
-            layer.weights, layer.biases = RandomNormalInitializer().initialize(weight_shape[0], weight_shape[1])
+            if self.init_method == "RandomNormal":
+                layer.weights, layer.biases = RandomNormalInitializer().initialize(weight_shape[0], weight_shape[1])
+            else:
+                layer.weights, layer.biases = XavierUniformInitializer().initialize(weight_shape[0], weight_shape[1])
 
     def forward_pass(self):
         for idx in range(1, len(self.layers)):
