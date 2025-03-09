@@ -24,6 +24,22 @@ class Sigmoid:
     def derivative(self, x):
         sig = self.compute(x)
         return sig * (1 - sig)
+    
+class Tanh:
+    def compute(self, x):
+        return np.tanh(x)
+
+    def derivative(self, x):
+        return 1.0 - np.tanh(x) ** 2
+
+class ReLU:
+    def compute(self, x):
+        return np.maximum(0, x)
+
+    def derivative(self, x):
+        grad = np.ones_like(x)
+        grad[x <= 0] = 0
+        return grad
 
 class RandomNormalInitializer:
     def __init__(self, mean=0.0, std=1.0):
