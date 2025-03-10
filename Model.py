@@ -18,7 +18,6 @@ class Softmax:
 
 class Sigmoid:
     def compute(self, x):
-        # Numerically stable Sigmoid
         return np.where(x >= 0,
                         1 / (1 + np.exp(-x)),
                         np.exp(x) / (1 + np.exp(x)))
@@ -39,7 +38,7 @@ class ReLU:
         return np.maximum(0, x)
 
     def derivative(self, x):
-        grad = np.ones_like(x)
+        grad = np.ones(x.shape)
         grad[x <= 0] = 0
         return grad
 
@@ -62,6 +61,13 @@ class XavierUniformInitializer:
         biases = np.zeros((n_out, 1))
         return weights, biases
 
+class HeNormalInitializer:
+    def initialize(self, n_in, n_out):
+        std = np.sqrt(2.0 / n_in)
+        weights = np.random.normal(0, std, (n_in, n_out))
+        biases = np.zeros((n_out, 1))
+        return weights, biases
+
 # Data scaler
 
 class MinMaxScaler:
@@ -70,7 +76,7 @@ class MinMaxScaler:
         self.max_val = np.max(X, axis=0)
 
     def transform(self, X):
-        return (X - self.min_val) / (self.max_val - self.min_val  + 1e-8)
+        return (X - self.min_val) / (self.max_val - self.min_val + 1e-8)
 
     def fit_transform(self, X):
         self.fit(X)
@@ -109,7 +115,7 @@ class CrossEntropyLoss:
         return -np.sum(targets * np.log(predictions + 1e-8))
 
     def gradient(self, targets, predictions):
-        return -targets / (predictions + 1e-8)
+        return predictions - targets
 
 class OneHotEncoder:
     def fit(self, labels, num_classes):
@@ -146,10 +152,10 @@ class BasicOptimizer:
         return self.update_val
     
 class MomentumOptimizer:
-    def __init__(self, eta=1e-3, momentum=0.9):
+    def __init__(self, eta=0.01, momentum=0.9):
         self.lr = eta
         self.momentum = momentum
-        self.update_val = 0
+        self.velocity = 0
 
     def set_parameters(self, params):
         if "learning_rate" in params:
@@ -158,14 +164,14 @@ class MomentumOptimizer:
             self.momentum = params["momentum"]
 
     def compute_update(self, grad):
-        self.update_val = self.momentum * self.update_val + self.lr * grad
-        return self.update_val
+        self.velocity = self.momentum * self.velocity + self.lr * grad
+        return self.velocity
 
 class NesterovOptimizer:
     def __init__(self, eta=1e-3, momentum=0.9):
         self.lr = eta
         self.momentum = momentum
-        self.update_val = 0
+        self.velocity = 0
 
     def set_parameters(self, params):
         if "learning_rate" in params:
@@ -174,8 +180,10 @@ class NesterovOptimizer:
             self.momentum = params["momentum"]
 
     def compute_update(self, grad):
-        self.update_val = self.momentum * self.update_val + self.lr * grad
-        return self.update_val
+        prev_velocity = self.velocity
+        self.velocity = self.momentum * self.velocity - self.lr * grad
+        update = -self.momentum * prev_velocity + (1 + self.momentum) * self.velocity
+        return update
 
 class RMSPropOptimizer:
     def __init__(self, beta=0.9, eta=1e-3, epsilon=1e-7):
@@ -254,7 +262,6 @@ class NadamOptimizer:
         return (self.lr / np.sqrt(v_hat + self.epsilon)) * update_term
 
 # Mapping optimizer names to instances
-
 optimizer_mapping = {
     "SGD": BasicOptimizer(),
     "Momentum": MomentumOptimizer(),
@@ -298,17 +305,19 @@ class NeuralNet:
             if optimizer_params:
                 layer.weight_optimizer.set_parameters(optimizer_params)
                 layer.bias_optimizer.set_parameters(optimizer_params)
-            if self.init_method == "Random":
-                layer.weights, layer.biases = RandomNormalInitializer().initialize(layer.input_dim, layer.units)
+            if isinstance(layer.activation, ReLU):
+                layer.weights, layer.biases = HeNormalInitializer().initialize(layer.input_dim, layer.units)
             else:
-                layer.weights, layer.biases = XavierUniformInitializer().initialize(layer.input_dim, layer.units)
+                if self.init_method == "Random":
+                    layer.weights, layer.biases = RandomNormalInitializer().initialize(layer.input_dim, layer.units)
+                else:
+                    layer.weights, layer.biases = XavierUniformInitializer().initialize(layer.input_dim, layer.units)
 
     def forward_batch(self, X):
         activations = [X]
         linear_outputs = [None]
         for layer in self.layers[1:]:
-            # Optimized dot product: use weights.T @ activation instead of transposing twice
-            z = np.dot(layer.weights.T, activations[-1]) - layer.biases
+            z = np.dot(layer.weights.T, activations[-1]) + layer.biases
             linear_outputs.append(z)
             a = layer.activation.compute(z)
             activations.append(a)
@@ -325,7 +334,6 @@ class NeuralNet:
         lr_history = []
 
         for epoch in tqdm(range(self.epochs)):
-            # Shuffle training data at the beginning of each epoch
             perm = np.random.permutation(self.targets.shape[1])
             X_train = self.layers[0].data[:, perm]
             Y_train = self.targets[:, perm]
@@ -337,29 +345,26 @@ class NeuralNet:
                 Y_batch = Y_train[:, start:end]
 
                 activations, linear_outputs = self.forward_batch(X_batch)
-                # Compute gradients for output layer
                 grad_out = self.loss.gradient(Y_batch, activations[-1])
-                grad_linear = grad_out  # When using softmax with cross-entropy
+                grad_linear = grad_out
 
-                # Update output layer weights and biases
-                grad_w = np.dot(activations[-2], grad_linear.T)
-                grad_b = -np.sum(grad_linear, axis=1, keepdims=True)
+                # Apply weight decay to gradients if specified
                 weight_decay = self.optimizer_params.get("weight_decay", 0)
+                grad_w = np.dot(activations[-2], grad_linear.T) + weight_decay * self.layers[-1].weights
+                grad_b = np.sum(grad_linear, axis=1, keepdims=True)
                 update = self.layers[-1].weight_optimizer.compute_update(grad_w)
-                self.layers[-1].weights -= update + weight_decay * self.layers[-1].weights
+                self.layers[-1].weights -= update
                 self.layers[-1].biases -= self.layers[-1].bias_optimizer.compute_update(grad_b)
 
-                # Backpropagate through hidden layers
                 for idx in range(len(self.layers) - 2, 0, -1):
                     grad_from_next = np.dot(self.layers[idx+1].weights, grad_linear)
                     activation_deriv = self.layers[idx].activation.derivative(linear_outputs[idx])
                     grad_linear = grad_from_next * activation_deriv
-                    grad_w = np.dot(activations[idx-1], grad_linear.T)
-                    grad_b = -np.sum(grad_linear, axis=1, keepdims=True)
+                    grad_w = np.dot(activations[idx-1], grad_linear.T) + weight_decay * self.layers[idx].weights
+                    grad_b = np.sum(grad_linear, axis=1, keepdims=True)
                     self.layers[idx].weights -= self.layers[idx].weight_optimizer.compute_update(grad_w)
                     self.layers[idx].biases -= self.layers[idx].bias_optimizer.compute_update(grad_b)
 
-            # End-of-epoch: compute metrics on the full training set
             train_acts, _ = self.forward_batch(self.layers[0].data)
             current_loss = self.loss.compute_loss(self.targets, train_acts[-1])
             loss_history.append(current_loss)
