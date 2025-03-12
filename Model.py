@@ -6,13 +6,14 @@ def sigmoid(x):
     return 1 / (1 + np.exp(-x))
 
 def tanh_act(x):
-    return (2 / (1 + np.exp(-2 * x))) - 1
+    return np.tanh(x)
 
 def relu_act(x):
     return np.where(x >= 0, x, 0)
 
 def softmax_fn(x):
-    exp_vals = np.exp(x)
+    x_shifted = x - np.max(x, axis=0)
+    exp_vals = np.exp(x_shifted)
     return exp_vals / np.sum(exp_vals, axis=0)
 
 def print_and_record(epoch, train_loss, valid_loss, train_acc, valid_acc):
@@ -82,7 +83,12 @@ class NeuralNetwork:
             self.biases[1] = np.zeros((self.num_classes, 1))
             return
 
-        if self.init_method == "Random":
+        if self.activation == "ReLU":
+            self.weights[1] = np.random.randn(self.hidden_units, self.input_size) * np.sqrt(2.0 / self.input_size)
+            for layer in range(2, self.total_layers):
+                self.weights[layer] = np.random.randn(self.hidden_units, self.hidden_units) * np.sqrt(2.0 / self.hidden_units)
+            self.weights[self.total_layers] = np.random.randn(self.num_classes, self.hidden_units) * np.sqrt(2.0 / self.hidden_units)
+        elif self.init_method == "Random":
             self.weights[1] = np.random.randn(self.hidden_units, self.input_size)
             for layer in range(2, self.total_layers):
                 self.weights[layer] = np.random.randn(self.hidden_units, self.hidden_units)
@@ -131,6 +137,38 @@ class NeuralNetwork:
             self.grad_biases[layer] = np.sum(self.grad_pre[layer], axis=1, keepdims=True)
             self.grad_weights[layer] = np.dot(self.grad_pre[layer], self.activations[layer - 1].T) + self.weight_decay * self.weights[layer]
 
+    def forward_nag(self, X):
+        self.activations[0] = X
+        for layer in range(1, self.total_layers):
+            self.pre_activations[layer] = self.lookahead_b[layer] + np.dot(self.lookahead_w[layer], self.activations[layer - 1])
+            if self.activation == "Sigmoid":
+                self.activations[layer] = sigmoid(self.pre_activations[layer])
+            elif self.activation == "Tanh":
+                self.activations[layer] = tanh_act(self.pre_activations[layer])
+            elif self.activation == "ReLU":
+                self.activations[layer] = relu_act(self.pre_activations[layer])
+        self.pre_activations[self.total_layers] = self.lookahead_b[self.total_layers] + np.dot(self.lookahead_w[self.total_layers], self.activations[self.total_layers - 1])
+        self.activations[self.total_layers] = softmax_fn(self.pre_activations[self.total_layers])
+
+    def backward_nag(self, Y):
+        if self.loss_fn == "cross_entropy":
+            self.grad_pre[self.total_layers] = self.activations[self.total_layers] - Y
+        elif self.loss_fn == "mean_squared_error":
+            self.grad_pre[self.total_layers] = (self.activations[self.total_layers] - Y) * (self.activations[self.total_layers] * (1 - self.activations[self.total_layers]))
+        self.grad_biases[self.total_layers] = np.sum(self.grad_pre[self.total_layers], axis=1, keepdims=True)
+        self.grad_weights[self.total_layers] = np.dot(self.grad_pre[self.total_layers], self.activations[self.total_layers - 1].T) + self.weight_decay * self.lookahead_w[self.total_layers]
+        for layer in range(self.total_layers - 1, 0, -1):
+            delta = np.dot(self.lookahead_w[layer + 1].T, self.grad_pre[layer + 1])
+            if self.activation == "Sigmoid":
+                deriv = self.activations[layer] * (1 - self.activations[layer])
+            elif self.activation == "Tanh":
+                deriv = 1 - self.activations[layer] ** 2
+            elif self.activation == "ReLU":
+                deriv = np.where(self.pre_activations[layer] > 0, 1, 0)
+            self.grad_pre[layer] = delta * deriv
+            self.grad_biases[layer] = np.sum(self.grad_pre[layer], axis=1, keepdims=True)
+            self.grad_weights[layer] = np.dot(self.grad_pre[layer], self.activations[layer - 1].T) + self.weight_decay * self.lookahead_w[layer]
+
     def predict(self, X):
         temp_pre = [None] * (self.total_layers + 1)
         temp_act = [None] * (self.total_layers + 1)
@@ -166,20 +204,108 @@ class NeuralNetwork:
                 correct += 1
         return correct / total
 
-    def train_sgd(self, X, Y, X_val, Y_val):
+    def _update_sgd(self):
+        for layer in range(1, self.total_layers + 1):
+            self.weights[layer] -= self.lr * self.grad_weights[layer]
+            self.biases[layer] -= self.lr * self.grad_biases[layer]
+
+    def _update_momentum(self, step):
+        for layer in range(1, self.total_layers + 1):
+            if step == 1:
+                self.velocity_w[layer] = self.lr * self.grad_weights[layer]
+                self.velocity_b[layer] = self.lr * self.grad_biases[layer]
+            else:
+                self.velocity_w[layer] = self.momentum * self.velocity_w[layer] + self.lr * self.grad_weights[layer]
+                self.velocity_b[layer] = self.momentum * self.velocity_b[layer] + self.lr * self.grad_biases[layer]
+            self.weights[layer] -= self.velocity_w[layer]
+            self.biases[layer] -= self.velocity_b[layer]
+
+    def _update_rmsprop(self, step):
+        for layer in range(1, self.total_layers + 1):
+            if step == 1:
+                self.rms_w[layer] = (1 - self.beta) * (self.grad_weights[layer] ** 2)
+                self.rms_b[layer] = (1 - self.beta) * (self.grad_biases[layer] ** 2)
+            else:
+                self.rms_w[layer] = self.beta * self.rms_w[layer] + (1 - self.beta) * (self.grad_weights[layer] ** 2)
+                self.rms_b[layer] = self.beta * self.rms_b[layer] + (1 - self.beta) * (self.grad_biases[layer] ** 2)
+            self.weights[layer] -= (self.lr / (np.sqrt(self.rms_w[layer] + self.epsilon)) * self.grad_weights[layer])
+            self.biases[layer] -= (self.lr / (np.sqrt(self.rms_b[layer] + self.epsilon)) * self.grad_biases[layer])
+
+    def _update_adam(self, step):
+        for layer in range(1, self.total_layers + 1):
+            if step == 1:
+                self.adam_mw[layer] = (1 - self.beta1) * self.grad_weights[layer]
+                self.adam_mb[layer] = (1 - self.beta1) * self.grad_biases[layer]
+                self.adam_vw[layer] = (1 - self.beta2) * (self.grad_weights[layer] ** 2)
+                self.adam_vb[layer] = (1 - self.beta2) * (self.grad_biases[layer] ** 2)
+            else:
+                self.adam_mw[layer] = self.beta1 * self.adam_mw[layer] + (1 - self.beta1) * self.grad_weights[layer]
+                self.adam_mb[layer] = self.beta1 * self.adam_mb[layer] + (1 - self.beta1) * self.grad_biases[layer]
+                self.adam_vw[layer] = self.beta2 * self.adam_vw[layer] + (1 - self.beta2) * (self.grad_weights[layer] ** 2)
+                self.adam_vb[layer] = self.beta2 * self.adam_vb[layer] + (1 - self.beta2) * (self.grad_biases[layer] ** 2)
+            corrected_mw = self.adam_mw[layer] / (1 - self.beta1 ** step)
+            corrected_mb = self.adam_mb[layer] / (1 - self.beta1 ** step)
+            corrected_vw = self.adam_vw[layer] / (1 - self.beta2 ** step)
+            corrected_vb = self.adam_vb[layer] / (1 - self.beta2 ** step)
+            self.weights[layer] -= (self.lr / (np.sqrt(corrected_vw) + self.epsilon)) * corrected_mw
+            self.biases[layer] -= (self.lr / (np.sqrt(corrected_vb) + self.epsilon)) * corrected_mb
+
+    def _update_nadam(self, step):
+        for layer in range(1, self.total_layers + 1):
+            if step == 1:
+                self.adam_mw[layer] = (1 - self.beta1) * self.grad_weights[layer]
+                self.adam_mb[layer] = (1 - self.beta1) * self.grad_biases[layer]
+                self.adam_vw[layer] = (1 - self.beta2) * (self.grad_weights[layer] ** 2)
+                self.adam_vb[layer] = (1 - self.beta2) * (self.grad_biases[layer] ** 2)
+            else:
+                self.adam_mw[layer] = self.beta1 * self.adam_mw[layer] + (1 - self.beta1) * self.grad_weights[layer]
+                self.adam_mb[layer] = self.beta1 * self.adam_mb[layer] + (1 - self.beta1) * self.grad_biases[layer]
+                self.adam_vw[layer] = self.beta2 * self.adam_vw[layer] + (1 - self.beta2) * (self.grad_weights[layer] ** 2)
+                self.adam_vb[layer] = self.beta2 * self.adam_vb[layer] + (1 - self.beta2) * (self.grad_biases[layer] ** 2)
+            corrected_mw = self.adam_mw[layer] / (1 - self.beta1 ** step)
+            corrected_mb = self.adam_mb[layer] / (1 - self.beta1 ** step)
+            corrected_vw = self.adam_vw[layer] / (1 - self.beta2 ** step)
+            corrected_vb = self.adam_vb[layer] / (1 - self.beta2 ** step)
+            w_update = (self.lr / (np.sqrt(corrected_vw) + self.epsilon)) * (self.beta1 * corrected_mw + (1 - self.beta1) * self.grad_weights[layer])
+            b_update = (self.lr / (np.sqrt(corrected_vb) + self.epsilon)) * (self.beta1 * corrected_mb + (1 - self.beta1) * self.grad_biases[layer])
+            self.weights[layer] -= w_update
+            self.biases[layer] -= b_update
+
+    def train(self, X_train, Y_train, X_val, Y_val):
         epoch = 0
-        num_samples = X.shape[0]
+        step = 0
+        num_samples = X_train.shape[0]
         while epoch < self.epochs:
             for start in range(0, num_samples, self.batch_size):
+                step += 1
                 end = min(start + self.batch_size, num_samples)
-                self.forward_pass(X[start:end].T)
-                self.backward_pass(Y[start:end].T)
-                for layer in range(1, self.total_layers + 1):
-                    self.weights[layer] -= self.lr * self.grad_weights[layer]
-                    self.biases[layer] -= self.lr * self.grad_biases[layer]
-            train_preds = self.predict(X.T)
-            train_loss = self.compute_loss(train_preds, Y)
-            train_acc = self.accuracy(train_preds, Y)
+                batch_X = X_train[start:end].T
+                batch_Y = Y_train[start:end].T
+
+                if self.optimizer == "nag" and step > 1:
+                    for layer in range(1, self.total_layers + 1):
+                        self.lookahead_w[layer] = self.weights[layer] - self.momentum * self.velocity_w[layer]
+                        self.lookahead_b[layer] = self.biases[layer] - self.momentum * self.velocity_b[layer]
+                    self.forward_nag(batch_X)
+                    self.backward_nag(batch_Y)
+                else:
+                    self.forward_pass(batch_X)
+                    self.backward_pass(batch_Y)
+
+                if self.optimizer == "sgd":
+                    self._update_sgd()
+                elif self.optimizer in ["momentum", "nag"]:
+                    self._update_momentum(step)
+                elif self.optimizer == "rmsprop":
+                    self._update_rmsprop(step)
+                elif self.optimizer == "adam":
+                    self._update_adam(step)
+                elif self.optimizer == "nadam":
+                    self._update_nadam(step)
+
+            train_preds = self.predict(X_train.T)
+            train_loss = self.compute_loss(train_preds, Y_train)
+            train_acc = self.accuracy(train_preds, Y_train)
             val_preds = self.predict(X_val.T)
             val_loss = self.compute_loss(val_preds, Y_val)
             val_acc = self.accuracy(val_preds, Y_val)
@@ -187,5 +313,4 @@ class NeuralNetwork:
             epoch += 1
 
     def fit(self, X_train, Y_train, X_val, Y_val):
-        if self.optimizer == "sgd":
-            self.train_sgd(X_train, Y_train, X_val, Y_val)
+        self.train(X_train, Y_train, X_val, Y_val)
