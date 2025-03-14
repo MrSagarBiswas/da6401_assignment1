@@ -16,21 +16,23 @@ def softmax_fn(x):
     exp_vals = np.exp(x_shifted)
     return exp_vals / np.sum(exp_vals, axis=0)
 
-def print_and_record(epoch, train_loss, valid_loss, train_acc, valid_acc):
+def print_and_record(epoch, train_loss, valid_loss, train_acc, valid_acc, iswandb=False):
     print(f"Epoch {epoch + 1}: train_loss = {train_loss:.2f}, valid_loss = {valid_loss:.2f}, train_accuracy = {train_acc:.2f}, val_accuracy = {valid_acc:.2f}")
-    wandb.log({
-        'epoch': epoch,
-        'train_loss': train_loss,
-        'train_accuracy': train_acc,
-        'val_loss': valid_loss,
-        'val_accuracy': valid_acc
-    })
+    if iswandb:
+        wandb.log({
+            'epoch': epoch,
+            'train_loss': train_loss,
+            'train_accuracy': train_acc,
+            'val_loss': valid_loss,
+            'val_accuracy': valid_acc
+        })
 
 class NeuralNetwork:
     def __init__(self, input_size=784, num_classes=10, num_hidden=1, hidden_units=4,
                  init_method="Random", activation="Sigmoid", loss_fn="cross_entropy",
                  epochs=1, batch_size=4, optimizer="sgd", lr=0.1, momentum=0.9,
-                 beta=0.9, beta1=0.9, beta2=0.999, epsilon=1e-6, weight_decay=0.005):
+                 beta=0.9, beta1=0.9, beta2=0.999, epsilon=1e-6, weight_decay=0.005, iswandb=False):
+        self.iswandb = iswandb
         self.input_size = input_size
         self.num_classes = num_classes
         self.num_hidden = num_hidden
@@ -309,7 +311,7 @@ class NeuralNetwork:
             val_preds = self.predict(X_val.T)
             val_loss = self.compute_loss(val_preds, Y_val)
             val_acc = self.accuracy(val_preds, Y_val)
-            print_and_record(epoch, train_loss, val_loss, train_acc, val_acc)
+            print_and_record(epoch, train_loss, val_loss, train_acc, val_acc, self.iswandb)
             epoch += 1
 
     def fit(self, X_train, Y_train, X_val, Y_val):
