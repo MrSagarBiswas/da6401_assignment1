@@ -68,30 +68,30 @@ To train the model, run the `train.py` script. It accepts several command-line a
 - `-wp, --wandb_project`: Weights & Biases project name.
 - `-we, --wandb_entity`: Weights & Biases entity.
 
-### Example
+### Examples
 
-Train the model on the Fashion MNIST dataset for 20 epochs using the Adam optimizer:
+1. Train on Fashion MNIST using Adam for 20 epochs:
 
 ```bash
 python train.py -d fashion_mnist -e 20 -o adam
 ```
 
-Training on the MNIST Dataset with RMSprop Optimizer for 15 Epochs:
+2. Train on MNIST using SGD for 15 epochs with a batch size of 32 and a learning rate of 0.001:
 
 ```bash
-python train.py --dataset mnist --epochs 15 --optimizer rmsprop
+python train.py -d mnist -e 15 -b 32 -o sgd -lr 0.001
 ```
 
-Training on the Fashion MNIST Dataset with Adam Optimizer for 25 Epochs and a Batch Size of 64:
+3. Train on MNIST using RMSprop for 30 epochs, a batch size of 16, a learning rate of 0.0005, and ReLU activation:
 
 ```bash
-python train.py --dataset fashion_mnist --epochs 25 --optimizer adam --batch_size 64
+python train.py -d mnist -e 30 -b 16 -o rmsprop -lr 0.0005 -a ReLU
 ```
 
-Training on a Custom Dataset with Momentum Optimizer for 10 Epochs, Batch Size of 32, and Weight Decay of 0.0005:
+4. Train on Fashion MNIST using Nadam for 10 epochs with weight decay 0.5 and a hidden size of 64:
 
 ```bash
-python train.py --dataset custom_dataset --epochs 10 --optimizer momentum --batch_size 32 --weight_decay 0.0005
+python train.py -d fashion_mnist -e 10 -o nadam -w_d 0.5 -sz 64
 ```
 
 ## Evaluation
