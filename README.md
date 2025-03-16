@@ -45,7 +45,7 @@ Ensure you have the following installed:
 Install the required packages via:
 ```bash
 pip install numpy tensorflow scikit-learn wandb
-```bash
+```
 
 ## Training the Model
 
@@ -72,8 +72,9 @@ To train the model, run the `train.py` script. It accepts several command-line a
 
 Train the model on the Fashion MNIST dataset for 20 epochs using the Adam optimizer:
 
-'python train.py -d fashion_mnist -e 20 -o adam'
-
+```bash
+python train.py -d fashion_mnist -e 20 -o adam'
+```
 
 ## Evaluation
 
