@@ -102,7 +102,9 @@ After training, the model is evaluated on both the validation and test sets. The
 
 To enable logging with Weights & Biases, provide your project name and entity when running the script:
 
-'python train.py -wp your_project_name -we your_entity'
+```bash
+python train.py -wp your_project_name -we your_entity
+```
 
 Ensure you have a Weights & Biases account and have installed the wandb library.
 
