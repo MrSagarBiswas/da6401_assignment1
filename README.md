@@ -73,7 +73,25 @@ To train the model, run the `train.py` script. It accepts several command-line a
 Train the model on the Fashion MNIST dataset for 20 epochs using the Adam optimizer:
 
 ```bash
-python train.py -d fashion_mnist -e 20 -o adam'
+python train.py -d fashion_mnist -e 20 -o adam
+```
+
+Training on the MNIST Dataset with RMSprop Optimizer for 15 Epochs:
+
+```bash
+python train.py --dataset mnist --epochs 15 --optimizer rmsprop
+```
+
+Training on the Fashion MNIST Dataset with Adam Optimizer for 25 Epochs and a Batch Size of 64:
+
+```bash
+python train.py --dataset fashion_mnist --epochs 25 --optimizer adam --batch_size 64
+```
+
+Training on a Custom Dataset with Momentum Optimizer for 10 Epochs, Batch Size of 32, and Weight Decay of 0.0005:
+
+```bash
+python train.py --dataset custom_dataset --epochs 10 --optimizer momentum --batch_size 32 --weight_decay 0.0005
 ```
 
 ## Evaluation
