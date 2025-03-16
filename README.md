@@ -45,7 +45,7 @@ Ensure you have the following installed:
 Install the required packages via:
 ```bash
 pip install numpy tensorflow scikit-learn wandb
-
+```bash
 
 ## Training the Model
 
