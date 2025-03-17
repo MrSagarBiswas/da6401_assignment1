@@ -8,6 +8,12 @@ This repository contains a custom implementation of a fully connected neural net
 >   - **train.py**: The main training script with command-line hyperparameter configuration.
 >   - **Jupyter Notebooks**: Specific notebooks for experiments and questions (e.g., Questions 1, 4, 7, 8, 10).
 
+## Project Links
+
+- [Wandb Project Report](https://wandb.ai/mrsagarbiswas-iit-madras/fashion-mnist-classification/reports/DA6401-Assignment-1-Report--VmlldzoxMTc5OTkwNA?accessToken=m30hu9e6znfoe8fs4c3wbyb6z3ccqdido6dprci2vbnfmdpc1cywnfv9tuq6r0hu)
+- [Github Project Repository](https://github.com/MrSagarBiswas/da6401_assignment1)
+
+
 ---
 
 ## Project Structure
